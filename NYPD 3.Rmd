@@ -1,0 +1,168 @@
+---
+title: "NYPD Shooting Data"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+
+## Data Loading and Cleanup
+```{r data}
+sessionInfo()
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(sf)
+theme_set(theme_bw())
+
+
+
+#read in data
+url = 'https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD'
+data = as_tibble(read.csv(url))
+
+#replace blanks with NA in PERP_AGE_GROUP and PERP_RACE
+data = data %>% mutate(
+    PERP_AGE_GROUP = na_if(PERP_AGE_GROUP, ""),
+    PERP_RACE = na_if(PERP_RACE, "")
+)
+
+#create OCCUR_DATE_TIME column as datetime type from OCCUR_DATE and OCCUR_TIME
+data = data %>% mutate(OCCUR_DATE_TIME = mdy_hms(paste(data$OCCUR_DATE, data$OCCUR_TIME)))
+
+#Convert STATISTICAL_MURDER_FLAG from char to logical
+data = data %>% mutate(STATISTICAL_MURDER_FLAG = as.logical(STATISTICAL_MURDER_FLAG))
+
+#Convert X and Y coords from chars to doubles
+data = data %>% mutate(X_COORD_CD = as.numeric(gsub(",", "",data$X_COORD_CD)))
+data = data %>% mutate(Y_COORD_CD = as.numeric(gsub(",", "",data$Y_COORD_CD)))
+
+#replace erroneous perp_age_group values with ""
+data = data %>% mutate(PERP_AGE_GROUP = replace(PERP_AGE_GROUP, PERP_AGE_GROUP == "940", ""))
+data = data %>% mutate(PERP_AGE_GROUP = replace(PERP_AGE_GROUP, PERP_AGE_GROUP == "1020", ""))
+data = data %>% mutate(PERP_AGE_GROUP = replace(PERP_AGE_GROUP, PERP_AGE_GROUP == "224", ""))
+
+#convert perp_age_group to factor
+data = data %>% mutate(PERP_AGE_GROUP = as_factor(PERP_AGE_GROUP))
+
+#convert perp_sex to factor
+data = data %>% mutate(PERP_SEX = as_factor(PERP_SEX))
+
+#convert perp_race to factor
+data = data %>% mutate(PERP_RACE = as_factor(PERP_RACE))
+
+#convert VIC_AGE_GROUP, VIC_SEX, and VIC_RACE to factors
+data = data %>% mutate(
+    VIC_AGE_GROUP = as.factor(VIC_AGE_GROUP),
+    VIC_SEX = as.factor(VIC_SEX),
+    VIC_RACE = as.factor(VIC_RACE)
+)
+
+#convert BORO to factor
+data = data %>% mutate(BORO = as.factor(BORO))
+
+#rearrange columns, drop LON_LAT, OCCUR_DATE, OCCUR_TIME
+data = data %>% select(INCIDENT_KEY, OCCUR_DATE_TIME, everything(), -Lon_Lat, -OCCUR_DATE, -OCCUR_TIME)
+
+summary(data)
+```
+
+A few rows had obviously erroneous age information, which was replaced with empty strings "". 
+
+Many rows had missing information in the PERP_RACE and / or PERP_AGE_GROUP columns. I replaced the missing values with NA's. I left the value "UNKNOWN" in place because it is not necessarily the same as an empty string / missing information, so to change it would be to lose or skew the data.
+
+\newpage
+
+## Plots
+
+```{r plot 1}
+#ggplot(data, aes(y=Latitude, x=Longitude))+geom_point(alpha = .1, color = "red", size = .5) + labs(title = "NYPD Shooting Incidents (Historic) by Lattitude and Longitude")
+
+library("rnaturalearth")
+library("rnaturalearthdata")
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+sites = data.frame(latitude = data$Latitude, longitude = data$Longitude)
+ggplot(data = world)+
+     geom_sf() + 
+     geom_point(data = sites, aes(x=longitude, y = latitude),alpha = .1, color = "red", size = .5)+
+     coord_sf(xlim = c(-74.27, -73.7), ylim = c(40.5, 40.92), expand = TRUE) + 
+  labs(title = "NYPD Shooting Incidents (Historic) by Latitude and Longitude")
+```
+
+This visualization indicates that shootings are not evenly spread across the city and instead are concentrated in at least two distinct areas. Some additional questions that this raises:
+
+* Are there factors other than location that correlate with the number of shootings?
+  + Average income?
+  + Racial composition?
+  + Age composistion?
+* Do the disparities persist when the number of shootings is normalized by population
+
+\newpage
+
+```{r plot 2}
+#hist(data$OCCUR_DATE_TIME, breaks = "days", freq = TRUE, xlab = "Date", ylab = "Number of Shootings", main = "NYPD Shooting Incidents (Historic) by Date")
+
+dates = data$OCCUR_DATE_TIME
+ggplot(data = data, aes(x=dates)) + 
+     geom_histogram(bins = 5479, color = "black") + 
+     ggtitle("Count of Shooting Incidents by Date") + 
+     xlab("Date") + 
+     ylab("Count of Shooting Incidents")  
+  
+     #geom_density(alpha = .2, fill="#FF6666")
+
+data2 = data %>% mutate(date = date(OCCUR_DATE_TIME)) %>%
+    select(date, PRECINCT)
+date_data = data2 %>% 
+    group_by(date) %>%
+    summarize(count = n())
+date_data = date_data %>% mutate(day = as.numeric(date(date) - min(date)))
+#date_data = date_data %>% mutate(pred = predict(mod))
+date_data %>% ggplot(aes(day, count)) + 
+    geom_point(aes(x=day, y = count), color = "blue", alpha = .5, size = .75) +
+    geom_smooth(method = "lm", color = "red") + 
+    ggtitle("Count of Shooting Incidents by Date") + 
+     xlab("Date") + 
+     ylab("Count of Shooting Incidents")  
+    #geom_text()
+
+```
+
+This visualization shows that there is a strong periodicity to the number of shootings, as well as a multi-year downward trend that was reversed in 2020. Some additional questions:
+
+* What is the cause of the periodicity?
+  + Weather?
+  + School schedules?
+  + Seasonal employment cycles?
+  + Sports seasons?
+* What caused the spike in 2020? COVID seems like a likely explanation, but what specific facet of the pandemic caused an increase in shootings?
+
+\newpage
+
+# Bias
+
+Broadly speaking, there are two potential sources of bias: biased **data** or biased **analysis**. 
+
+## Data Bias
+The data could be biased in a number of ways:
+
+* Bias in which incidents are recorded. It is possible that some precincts are less likely to respond to shooting incidents, or less likely to find a perpetrator if they do. Perhaps there are events which could or could not be classified as shooting incidents based on the discretion of the responding officer.
+* Bias in racial categorization of perpetrators and / or victims. Age categorization is obviously objective, but racial categorization is not necessarily so. Do responding officers perform the racial categorization or do the victims and perpetrators self identify? Are the given racial categories the most relevant and appropriate? Could some categories be combined or split?
+* Bias in police coverage. If some areas have a higher police presence they might appear to have more shootings than other, more lightly policed areas, even if the two areas have the same rate of shooting incidents,  simply because there are more police to respond to and record events in the first area.
+
+## Analysis Bias
+The analysis of the data could also be biased in a number of ways:
+
+* Bias in data selection. In this case the data was pre-determined, but in general the selection of data can introduce bias. Which data sources are deemed trustworthy?
+* Bias in data cleanup. Handling missing, incomplete, or erroneous data is left to the discretion of the analyst, which means it is a potential source of bias. Are outliers left in or removed? How is missing data handled: is the entire row ignored or are blank columns tolerated? Either decision will affect the final analysis.
+* Bias in goal of analysis. Generally, data does not speak for itself. The analyst must decide what questions they are trying to answer with a given set of data, and that decision will almost certainly introduce bias. Why study shootings rather than petty theft or embezzlement? Should the purpose of the analysis be to find out the root causes of shootings so a governmental body can minimize them, or to provide a guide on how an individual can best avoid danger? There are no wrong answers to these questions, but any answer will introduce some of the analyst's own bias.
+
+Personally, I am skeptical of race-based explanations for crime; I think material / economic conditions have much more explanatory power. In this case, I chose not to analyze the data using race at all, but if I was required to, for whatever reason, I would make sure that I gave as much attention to racial factors as I did to economic ones. 
